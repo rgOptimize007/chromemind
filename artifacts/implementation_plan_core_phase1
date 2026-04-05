@@ -1,0 +1,364 @@
+# ChromeMind — Phase 1 Implementation Plan (v2)
+**Goal:** Scrape bookmarks + daily history from Chrome and write them to Notion via CLI.
+
+```bash
+chromemind run --source bookmarks --limit 10 --dry-run
+chromemind run --source history --limit 50 --dry-run
+```
+
+---
+
+## Background
+
+The project dir currently has only 2 files:
+- `SYSTEM_DESIGN.md` — full architecture spec
+- `chromemind-config.yaml` — config template (already written)
+
+Phase 1 scope: **no LLM enrichment**. Pipeline is: Scrape → Write → Log.
+
+**Confirmed decisions from review:**
+- ✅ File-based scraping for bookmarks (no MCP needed — Chrome's `Bookmarks` JSON file)
+- ✅ History scraping added to Phase 1 (using Chrome's `History` SQLite DB)
+- ✅ Chrome DevTools MCP wired **for active tabs** retrieval
+- ✅ No Enrichment Agent in Phase 1
+- ✅ Chrome profile: `rohit_essential`
+- ✅ Python 3.13.3
+- ✅ Notion token already configured in MCP; only `NOTION_DATABASE_ID` needed in `.env`
+
+---
+
+## Architecture Decision: Notion MCP vs. notion-client SDK
+
+> [!NOTE]
+> You asked: *"Why do we need notion-client if we use MCP for Notion?"* — Here's the full trade-off:
+
+| | `notion-client` SDK | Notion MCP |
+|---|---|---|
+| **What it is** | Python library calling Notion REST API directly | A running server process that exposes Notion as tools to an **LLM agent** |
+| **Designed for** | Python scripts, CLIs, backend services | AI assistants (Claude, Gemini) issuing tool-calls in a conversation |
+| **How called** | `import notion_client; client.pages.create(...)` | LLM generates `{"tool": "create_page", "args": {...}}` → MCP routes it |
+| **Token location** | Your `.env` file | MCP server config (already done ✅) |
+| **Works in a Python CLI?** | ✅ Yes — clean, synchronous, easy to test | ❌ No — requires spawning & connecting to an MCP subprocess, adds ~200 lines of JSON-RPC plumbing |
+| **Testability** | Easy to mock | Hard to mock (need running MCP process) |
+| **Overhead** | ~0ms | MCP process startup + IPC per call |
+
+**Decision: Use `notion-client` SDK** for our Python agents. The MCP server is perfect when *you* or an AI assistant runs `chromemind` interactively — but the CLI code itself should call the API directly. Your MCP token and the SDK token are **the same token** — you just copy it to `.env` once.
+
+> [!TIP]
+> **How to find your Notion Database ID:**
+> 1. Open your Notion database in a browser.
+> 2. The URL looks like: `https://www.notion.so/yourworkspace/`**`abc123def456...`**`?v=...`
+> 3. The 32-character string between the last `/` and `?v=` is your database ID.
+> 4. Or: Share → Copy link → the long hex string is the ID.
+
+---
+
+## How to Get Your Notion Token for `.env`
+
+Your token is already inside your MCP config. Locate it at one of these paths:
+
+```
+# Claude Desktop MCP config (typical location)
+C:\Users\hp\AppData\Roaming\Claude\claude_desktop_config.json
+
+# Or wherever your MCP server is configured
+```
+
+Look for the `NOTION_API_KEY` or `NOTION_TOKEN` value inside, and copy it to `.env`:
+```
+NOTION_DATABASE_ID=abc123def456...   # from browser URL
+```
+_(Token itself goes in `.env` only if not already resolvable — see parse_config.py design below)_
+
+---
+
+## Proposed Changes
+
+### Project Foundation
+
+#### [NEW] `pyproject.toml`
+Python package with dependencies:
+- `click` — CLI framework
+- `pyyaml` — config parsing
+- `python-dotenv` — `.env` loading
+- `notion-client` — Notion REST API (see trade-off above)
+- `pydantic` — schema validation for `RawItem`
+
+#### [NEW] `.env.example`
+```
+# Copy your Notion integration token here (same token used by your MCP setup)
+NOTION_TOKEN=secret_xxx
+NOTION_DATABASE_ID=xxx           # See how-to above
+```
+
+#### [NEW] `.gitignore`
+Ignores `.env`, `state/`, `logs/`, `__pycache__/`, `.venv/`, `*.db`
+
+---
+
+### Core Package — `chromemind/`
+
+#### [NEW] `chromemind/__init__.py`
+Empty init.
+
+#### [NEW] `chromemind/schemas.py`
+Pydantic models:
+- `RawItem` — output of ScraperAgent (id, url, title, source, folder_path, scraped_at, visit_count)
+- `EnrichedItem` — stub (for Phase 2)
+- `RunConfig` — parsed & validated config object
+- `WriteReport` — `{created, updated, skipped, failed}`
+
+> `visit_count` is a new optional field for history items (how many times Chrome visited a URL).
+
+#### [NEW] `chromemind/errors.py`
+- `SkillError`
+- `GuardrailViolation(rule_id, message)`
+- `ChromeNotFoundError`
+- `NotionWriteError`
+
+#### [NEW] `chromemind/guardrails.py`
+- `check_before_write(item, config)` — blocks if `dry_run=True`
+- `check_max_items(count, config)` — G003: hard stop
+- `check_api_key_not_in_log(message)` — G002: redacts secrets
+
+#### [NEW] `chromemind/cli.py`
+Click CLI entry point:
+```bash
+chromemind run [OPTIONS]
+  --source [bookmarks|history|tabs|all]
+  --limit  INTEGER         # default: from config
+  --dry-run / --no-dry-run
+  --since  DATE            # (stub for Phase 3) history since date
+```
+
+---
+
+### Skills — `skills/`
+
+#### [NEW] `skills/parse_config.py`
+- Loads `chromemind.config.yaml`
+- Resolves `${ENV_VAR}` placeholders from `.env`
+- Validates required fields (database_id, etc.)
+- Returns `RunConfig`
+
+#### [NEW] `skills/scrape_bookmarks.py`
+Reads Chrome's local `Bookmarks` JSON file:
+```
+%LOCALAPPDATA%\Google\Chrome\User Data\rohit_essential\Bookmarks
+```
+- Recursively flattens the nested tree
+- Preserves `folder_path` (e.g. `"Dev > Kafka > Articles"`)
+- Returns `list[dict]` up to `limit`
+
+#### [NEW] `skills/scrape_history.py` ⭐ _New in v2_
+Reads Chrome's `History` SQLite database:
+```
+%LOCALAPPDATA%\Google\Chrome\User Data\rohit_essential\History
+```
+- Copies the DB to a temp file first (Chrome locks it when open)
+- Queries: `SELECT url, title, visit_count, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT ?`
+- Converts Chrome's epoch (microseconds since 1601-01-01) to ISO timestamp
+- Filters out `chrome://`, `chrome-extension://` internal URLs
+- Returns `list[dict]` with `{url, title, visit_count, last_visited_at}`
+
+#### [NEW] `skills/scrape_tabs.py` ⭐ _Chrome DevTools MCP_
+Retrieves **active tabs** using Chrome DevTools Protocol:
+- Connects to Chrome's remote debugging endpoint: `http://localhost:9222/json`
+- Chrome must be started with: `--remote-debugging-port=9222`
+- Returns list of `{url, title, tab_group_name}` for all open tabs
+- Falls back gracefully if Chrome is not running in debug mode
+
+> [!IMPORTANT]
+> **Chrome DevTools MCP for Tabs — Setup Required**:
+> To scrape active tabs, Chrome must be launched with the remote debugging flag:
+> ```bash
+> "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --profile-directory="rohit_essential"
+> ```
+> You only need this when running `--source tabs`. Bookmarks and history work without it.
+
+#### [NEW] `skills/normalise_raw_item.py`
+- Unified normaliser for all three sources
+- Generates `id = sha256(url)` for dedup
+- Adds `scraped_at` timestamp
+- Sets `source` field: `bookmark | history | tab`
+- Handles `visit_count` field (null for bookmarks/tabs)
+
+#### [NEW] `skills/map_to_notion_schema.py`
+Maps `RawItem` → Notion page properties. Phase 1 fields:
+
+| RawItem field | Notion property | Type |
+|---|---|---|
+| `title` | Title | title |
+| `url` | URL | url |
+| `source` | Source | select |
+| `folder_path` | Folder Path | rich_text |
+| `scraped_at` | Scraped At | date |
+| `id` | ChromeMind ID | rich_text |
+| `visit_count` | Visit Count | number |
+| _(default)_ | Status | select = "Unread" |
+
+#### [NEW] `skills/notion_upsert.py`
+- Queries Notion for existing page by `ChromeMind ID` filter
+- If found + `duplicate_strategy=update`: updates non-protected fields
+- If found + `duplicate_strategy=skip`: returns `skipped`
+- If not found: creates new page
+- Short-circuits immediately if `dry_run=True` (just logs)
+
+#### [NEW] `skills/handle_notion_errors.py`
+- Wraps SDK calls with retry (1 retry on HTTP 429/500)
+- On failure: logs reason, returns `{status: "failed", reason: ...}`
+- Never raises — always returns a result dict
+
+#### [NEW] `skills/format_log_entry.py`
+Formats log entry as structured JSON: `{agent, event, level, payload, timestamp}`.
+
+#### [NEW] `skills/write_log.py`
+- Appends to `logs/chromemind_YYYY-MM-DD.log`
+- Log rotation: deletes files older than `retain_days` (default 7)
+
+---
+
+### Agents — `agents/`
+
+#### [NEW] `agents/logger.py`
+**LoggerAgent** — cross-cutting, called by every other agent:
+```python
+LoggerAgent.log(agent="scraper", event="bookmarks_loaded", level="info", payload={"count": 47})
+```
+
+#### [NEW] `agents/scraper.py`
+**ScraperAgent** — Phase 1: bookmarks + history + tabs
+1. Reads `sources` from config to decide what to scrape
+2. Dispatches to the appropriate skill per source
+3. Calls `normalise_raw_item` on every result
+4. Deduplicates by `id` (sha256) across sources
+5. Caps at `limit` per source
+6. Logs item counts per source
+
+#### [NEW] `agents/notion_writer.py`
+**NotionWriterAgent**:
+1. Receives `list[RawItem]`
+2. For each item: `map_to_notion_schema` → `notion_upsert`
+3. Rate limits at 3 req/s (`asyncio.sleep(0.34)`)
+4. Returns `WriteReport`
+5. Logs every write action
+
+#### [NEW] `agents/orchestrator.py`
+**OrchestratorAgent** — wires Phase 1 end-to-end:
+1. `parse_config` → `RunConfig`
+2. `ScraperAgent.run()` → `list[RawItem]`
+3. `NotionWriterAgent.run()` → `WriteReport`
+4. Writes `state/last_run.json`
+5. Prints a human-readable summary table
+
+---
+
+### Config Updates
+
+#### [MODIFY] `chromemind-config.yaml`
+Add history source + Chrome profile:
+```yaml
+sources:
+  bookmarks: true
+  reading_list: false       # Phase 3
+  tab_groups: false         # Phase 3
+  history: true             # NEW Phase 1
+
+chrome:
+  profile: "rohit_essential"  # UPDATED from Default
+  mcp_timeout_ms: 5000
+  remote_debug_port: 9222   # for tab scraping
+  history_days: 7           # only import last 7 days of history
+```
+
+---
+
+### State & Config Files
+
+#### [NEW] `state/.gitkeep`
+Placeholder for gitignored `state/` folder.
+
+#### [NEW] `.chromemind/global_guardrails.yaml`
+G001–G005 formal definitions from spec.
+
+---
+
+### Tests — `tests/`
+
+#### [NEW] `tests/fixtures/sample_bookmarks.json`
+Realistic Chrome `Bookmarks` JSON with nested folders.
+
+#### [NEW] `tests/fixtures/sample_history.json`
+Pre-converted history rows (URL + title + visit_count + timestamp).
+
+#### [NEW] `tests/test_scraper.py`
+- `test_scrape_bookmarks_flat_output` — verifies flattening + folder_path
+- `test_scrape_history_filters_internal_urls` — `chrome://` excluded
+- `test_normalise_raw_item_generates_sha256_id`
+- `test_dedup_across_sources` — same URL in bookmark + history = 1 item
+
+#### [NEW] `tests/test_guardrails.py`
+- `test_dry_run_blocks_write`
+- `test_max_items_hard_stop`
+- `test_api_key_redacted_in_log`
+
+---
+
+## Verification Plan
+
+### Automated Tests
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+### Manual Verification Steps
+
+1. **Local scrape test** (no Notion needed):
+   ```bash
+   chromemind run --source bookmarks --limit 5 --dry-run
+   chromemind run --source history  --limit 10 --dry-run
+   ```
+   Expected: items printed to terminal, `logs/` file created, nothing written to Notion.
+
+2. **Live Notion write** (after `.env` configured):
+   ```bash
+   chromemind run --source bookmarks --limit 10
+   ```
+   Expected: 10 pages appear in Notion DB with correct properties.
+
+3. **Idempotency test**:
+   Run the same command twice → `updated: 10, created: 0` on second run.
+
+4. **Tab scraping** (Chrome in debug mode):
+   ```bash
+   chromemind run --source tabs
+   ```
+
+---
+
+## Build Order (Day 1 sequence — 18 steps)
+
+```
+Step 1.  pyproject.toml + .env.example + .gitignore
+Step 2.  chromemind/schemas.py        ← define RawItem, RunConfig, WriteReport
+Step 3.  chromemind/errors.py
+Step 4.  chromemind/guardrails.py
+Step 5.  skills/parse_config.py
+Step 6.  skills/scrape_bookmarks.py   ← test immediately against your actual Chrome
+Step 7.  skills/scrape_history.py     ← test with SQLite copy approach
+Step 8.  skills/scrape_tabs.py        ← requires Chrome debug port
+Step 9.  skills/normalise_raw_item.py
+Step 10. agents/logger.py
+Step 11. agents/scraper.py
+Step 12. skills/map_to_notion_schema.py
+Step 13. skills/handle_notion_errors.py
+Step 14. skills/notion_upsert.py
+Step 15. agents/notion_writer.py
+Step 16. agents/orchestrator.py
+Step 17. chromemind/cli.py            ← wire everything together
+Step 18. tests/ + fixtures
+```
+
+> [!TIP]
+> After Step 7 you can already run a standalone test of your scraper layer with no Notion dependency. This is a natural checkpoint to validate Chrome data is being read correctly before touching Notion.

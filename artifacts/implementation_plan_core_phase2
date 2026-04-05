@@ -1,0 +1,84 @@
+# ChromeMind — Phase 2: Enrichment Workflow
+
+**Goal:** Use Gemini LLM to enrich scraped items with category, summary, priority score, tags, and read-time estimate before writing to Notion.
+
+---
+
+## What Changes
+
+### New Pipeline
+```
+Scrape → Enrich (LLM) → Write → Log
+         ^^^^^^^^
+         NEW STEP
+```
+
+### New Skills (4 files)
+| File | Purpose |
+|---|---|
+| `skills/build_enrichment_prompt.py` | Constructs batched LLM prompt from RawItems |
+| `skills/call_llm.py` | Gemini SDK wrapper with retry + rate limiting |
+| `skills/parse_enrichment_response.py` | Parses LLM JSON output into EnrichedItems |
+| `skills/validate_enrichment.py` | Schema validation + priority inflation guardrail |
+
+### New Agent (1 file)
+| File | Purpose |
+|---|---|
+| `agents/enricher.py` | EnrichmentAgent — batches items, calls LLM, validates output |
+
+### Modified Files
+| File | Change |
+|---|---|
+| `agents/orchestrator.py` | Insert enrichment step between scrape and write |
+| `agents/notion_writer.py` | Accept `EnrichedItem` (superset of `RawItem`) |
+| `skills/map_to_notion_schema.py` | Map enrichment fields to Notion properties |
+| `chromemind/cli.py` | Add `--enrich / --no-enrich` flag |
+| `chromemind-config.yaml` | Already has enrichment config ✅ |
+| `pyproject.toml` | Add `google-genai` dependency |
+| `.env` | Add `GEMINI_API_KEY` |
+
+### Notion DB Schema Additions
+| Property | Type |
+|---|---|
+| `Category` | Select |
+| `Tags` | Multi-select |
+| `Summary` | Rich Text |
+| `Priority Score` | Number |
+| `Priority Reason` | Rich Text |
+| `Read Time` | Rich Text |
+| `Enriched At` | Date |
+| `Needs Review` | Checkbox |
+
+---
+
+## Build Order (10 steps)
+
+```
+Step 1.  pyproject.toml — add google-genai dependency
+Step 2.  .env — add GEMINI_API_KEY placeholder
+Step 3.  skills/build_enrichment_prompt.py
+Step 4.  skills/call_llm.py
+Step 5.  skills/parse_enrichment_response.py
+Step 6.  skills/validate_enrichment.py
+Step 7.  agents/enricher.py
+Step 8.  Update agents/orchestrator.py — wire enrichment
+Step 9.  Update skills/map_to_notion_schema.py — add enrichment fields
+Step 10. Update chromemind/cli.py — add --enrich flag
+Step 11. Patch Notion DB schema — add enrichment columns
+Step 12. Test: chromemind run --source bookmarks --limit 5 --enrich
+```
+
+---
+
+## Enrichment Prompt Design
+
+Each LLM call processes a **batch of 5 items**. The prompt:
+1. Provides the list of valid categories from config
+2. Asks for JSON array output with strict schema
+3. Requests: category, summary (1-2 sentences), priority_score (1-10), priority_reason, tags (3-5), read_time_estimate
+
+## Guardrails
+- **Rate limit:** Max 10 LLM calls/minute
+- **Priority inflation:** No more than 20% of items can score ≥ 8
+- **Retry:** 1 retry on invalid JSON, then mark `needs_review=true`
+- **Temperature:** ≤ 0.3 for deterministic output
