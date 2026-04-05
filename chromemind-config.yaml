@@ -1,0 +1,59 @@
+# chromemind.config.yaml  (lives in repo root)
+
+version: "1.0"
+
+# ── Sources ──
+sources:
+  bookmarks: true
+  history: true
+  reading_list: false
+  tab_groups: false
+
+# ── Limits ──
+limits:
+  max_items_per_source: 500
+  max_items_per_run: 1000
+  batch_size: 5
+
+# ── Enrichment ──
+enrichment:
+  model: "gemini-2.5-flash"
+  temperature: 0.2
+  max_tokens: 4096
+  categories:
+    - "System Design"
+    - "AI / ML"
+    - "Career & Growth"
+    - "Finance"
+    - "Productivity"
+    - "Health"
+    - "Entertainment"
+    - "Other"
+
+# ── Notion ──
+notion:
+  database_id: "${NOTION_DATABASE_ID}"
+  duplicate_strategy: "update"
+  protected_fields:
+    - "Status"
+    - "Notes"
+  dry_run: false
+
+# ── Guardrails ──
+guardrails:
+  max_high_priority_percent: 20
+  allowed_domains:
+    - "api.notion.com"
+    - "generativelanguage.googleapis.com"
+
+# ── Logging ──
+logging:
+  level: "info"
+  retain_days: 7
+
+# ── Chrome ──
+chrome:
+  profile: "Default"
+  mcp_timeout_ms: 5000
+  remote_debug_port: 9222
+  history_days: 1

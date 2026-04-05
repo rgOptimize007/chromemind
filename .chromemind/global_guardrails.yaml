@@ -1,0 +1,23 @@
+global_guardrails:
+  - id: G001
+    rule: "Never delete data from Notion, only create or update"
+    enforcement: hard_stop
+
+  - id: G002
+    rule: "Never expose API keys in logs"
+    enforcement: hard_stop
+
+  - id: G003
+    rule: "Never process more than config.max_items_per_run items total"
+    enforcement: hard_stop
+
+  - id: G004
+    rule: "Always write a log entry before and after each agent action"
+    enforcement: warn_and_continue
+
+  - id: G005
+    rule: "Never make outbound HTTP calls to domains not in allowlist"
+    enforcement: hard_stop
+    allowlist:
+      - api.notion.com
+      - generativelanguage.googleapis.com
