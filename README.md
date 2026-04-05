@@ -6,11 +6,12 @@
 
 ## ✨ Features
 
-- **Multi-source scraping** — Bookmarks, browsing history, and active tabs
-- **LLM enrichment** — Auto-categorise, summarise, tag, and priority-score every item using Gemini
-- **Notion sync** — Idempotent upserts with deduplication (sha256-based)
-- **Guardrails** — Priority inflation detection, rate limiting, dry-run mode, never-delete policy
-- **Agent architecture** — Modular agents (Scraper → Enricher → Writer) with structured logging
+- **Multi-source scraping** — Bookmarks, browsing history, and active tab groups via custom side-loaded extension.
+- **LLM enrichment** — Auto-categorise, summarise, tag, and priority-score every item using any supported LLM (Gemini as reference).
+- **Notion sync** — Idempotent upserts with deduplication (sha256-based).
+- **Git automation** — Automated branch management, squashing, and conflict detection via `GitAgent`.
+- **Guardrails** — Priority inflation detection, rate limiting, and private configuration masking.
+- **Robust Testing** — Integrated `pytest` suite for agents and skills with extensive mocking.
 
 ---
 
@@ -21,18 +22,20 @@
 │         ChromeMind CLI          │
 └──────────────┬──────────────────┘
                │
-┌──────────────▼──────────────────┐
-│       Orchestrator Agent        │
-└──┬───────────┬──────────┬───────┘
+┌──────────────▼──────────────────┐       ┌──────────────┐
+│       Orchestrator Agent        ◄───────►  Git Agent   │
+└──┬───────────┬──────────┬───────┘       └──────────────┘
    │           │          │
    ▼           ▼          ▼
 Scraper    Enrichment   Notion Writer
 Agent      Agent        Agent
    │           │          │
    ▼           ▼          ▼
-Chrome      Gemini     Notion API
-Files/DB    LLM        (REST)
+Chrome      Any LLM     Notion API
+(Ext/DB)    API         (REST)
 ```
+
+> **Note:** For tab group scraping, a custom helper extension is used to push data from the browser to the internal agent server.
 
 ---
 
@@ -42,12 +45,12 @@ Files/DB    LLM        (REST)
 |---|---|
 | **Language** | Python 3.10+ |
 | **CLI** | [Click](https://click.palletsprojects.com/) |
-| **Config** | YAML + `.env` (via `python-dotenv`) |
-| **Validation** | [Pydantic v2](https://docs.pydantic.dev/) |
-| **LLM** | [Google Gemini](https://ai.google.dev/) via `google-genai` SDK |
-| **Notion** | [notion-client](https://github.com/ramnes/notion-sdk-py) (REST API) |
-| **Browser Data** | Chrome Bookmarks JSON, History SQLite, DevTools Protocol |
-| **Testing** | pytest + pytest-asyncio |
+| **Config** | YAML + `.env` |
+| **LLM** | Provider-agnostic (Gemini 2.x-flash recommended) |
+| **Scraping** | Chrome Bookmarks JSON, SQLite, **Custom MV3 Extension** |
+| **Git** | [GitPython](https://gitpython.readthedocs.io/) |
+| **Testing** | [pytest](https://pytest.org/) + [pytest-mock](https://pypi.org/project/pytest-mock/) |
+| **Notion** | [notion-client](https://github.com/ramnes/notion-sdk-py) |
 
 ---
 
@@ -74,6 +77,15 @@ pip install -e ".[dev]"
 cp .env.example .env
 # Edit .env with your actual keys (see Configuration below)
 ```
+
+### Extension Setup (Required for Tabs)
+
+To scrape active **Tab Groups**, you must side-load the included Chrome extension:
+1. Open Chrome and navigate to `chrome://extensions`.
+2. Enable **Developer mode** in the top right.
+3. Click **Load unpacked** and select the `/extension` directory from this project.
+
+![Extension Setup](artifacts/extension_setup.png)
 
 ---
 
@@ -296,6 +308,22 @@ ChromeMind enforces safety at every layer:
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+---
+
+## 🧪 Testing
+
+ChromeMind uses `pytest` for its test-driven development cycle.
+- **Unit Tests**: Coverage for individual skills (prompt building, normalization).
+- **Integration Tests**: Mocked agent workflows to verify the pipeline's logic.
+
+```bash
+# Run all tests
+pytest
+
+# Run tests with output
+pytest -s -v
+```
 
 ---
 
