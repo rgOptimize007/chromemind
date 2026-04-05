@@ -7,12 +7,14 @@ from agents.scraper import ScraperAgent
 from agents.enricher import EnrichmentAgent
 from agents.notion_writer import NotionWriterAgent
 from agents.logger import LoggerAgent
+from agents.git_agent import GitAgent, GitAgentError
 from chromemind.guardrails import check_max_items
 
 class OrchestratorAgent:
     @staticmethod
     async def run(source_override: str | None = None, limit_override: int | None = None,
-                  dry_run_override: bool | None = None, enrich: bool = True):
+                  dry_run_override: bool | None = None, enrich: bool = True,
+                  auto_commit: bool = False, feature_branch: str = "auto-update"):
         config = parse_config()
         if dry_run_override is not None:
             config.notion.dry_run = dry_run_override
@@ -46,6 +48,18 @@ class OrchestratorAgent:
         report = await NotionWriterAgent.run(items_to_write, config)
         OrchestratorAgent._save_state(report)
         LoggerAgent.log("orchestrator", "completed", "info", report.model_dump(), config.logging)
+        
+        if auto_commit:
+            try:
+                GitAgent.checkout_feature_branch(feature_branch)
+                msg = f"chore(state): pipeline update with {len(items_to_write)} items synced"
+                GitAgent.commit_changes(msg)
+                GitAgent.push_and_squash_if_needed(feature_branch, threshold=3)
+            except GitAgentError as e:
+                LoggerAgent.log("orchestrator", "git_agent_error", "warn", {"msg": str(e)}, config.logging)
+                # If there's an ongoing PR mapped to this branch that has conflicts,
+                # the supervisor would be alerted here.
+                
         return report
 
     @staticmethod

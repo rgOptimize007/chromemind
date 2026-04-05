@@ -7,7 +7,7 @@ sources:
   bookmarks: true
   history: true
   reading_list: false
-  tab_groups: false
+  tab_groups: true
 
 # ── Limits ──
 limits:
@@ -17,7 +17,7 @@ limits:
 
 # ── Enrichment ──
 enrichment:
-  model: "gemini-2.5-flash"
+  model: "<YOUR_GEMINI_MODEL_HERE>"
   temperature: 0.2
   max_tokens: 4096
   categories:
@@ -53,7 +53,7 @@ logging:
 
 # ── Chrome ──
 chrome:
-  profile: "Default"
+  profile: "<YOUR_CHROME_PROFILE_HERE>"
   mcp_timeout_ms: 5000
   remote_debug_port: 9222
   history_days: 1

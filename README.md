@@ -97,7 +97,14 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 ### 2. Config File (`chromemind-config.yaml`)
 
-The main config file controls all pipeline behaviour. Key sections:
+The main config file controls all pipeline behaviour.
+> [!IMPORTANT]
+> The `chromemind-config.yaml` is ignored by git to protect your privacy. Use the provided template to get started:
+> ```bash
+> cp chromemind-config.example.yaml chromemind-config.yaml
+> ```
+
+Key sections in `chromemind-config.yaml`:
 
 ```yaml
 sources:
@@ -250,7 +257,7 @@ chromemind/
 ├── state/                     # Run state (gitignored)
 ├── logs/                      # Daily logs (gitignored)
 │
-├── chromemind-config.yaml     # Main configuration
+├── chromemind-config.example.yaml # Configuration template
 ├── .env.example               # Environment template
 ├── .gitignore
 ├── pyproject.toml             # Package definition

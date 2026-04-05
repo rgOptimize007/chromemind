@@ -1,5 +1,6 @@
 # ── Dependencies ──
 .env
+chromemind-config.yaml
 state/
 logs/
 __pycache__/
@@ -8,6 +9,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+artifacts/
 
 # ── IDE ──
 .idea/
